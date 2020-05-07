@@ -137,7 +137,7 @@ function convertDate(dates){
 }
 
 CaseSchema.methods.JSONExcellOutput = function () {
-    let finals,stages,birthDate,createDate
+    let finals,stages,birthDate,createDate,diagnosis,diagnosis_other
     
     if(this.final_result == '0'){
         finals = 'NEGATIF'
@@ -152,6 +152,8 @@ CaseSchema.methods.JSONExcellOutput = function () {
     stages = (this.stage == 0 ? "Prosess" : "Selesai")    
     birthDate = (this.birth_date != null ? convertDate(this.birth_date) : null)
     createDate = (this.createdAt != null ? convertDate(this.createdAt) : null)
+    diagnosis = (this.last_history.diagnosis > 1 ? "" : this.last_history.diagnosis.toString())
+    diagnosis_other = (this.last_history.diagnosis > 1 ? "" : this.last_history.diagnosis_other.toString())
     
     return {
        "Kode Kasus": this.id_case,
@@ -163,12 +165,17 @@ CaseSchema.methods.JSONExcellOutput = function () {
        "Tanggal Lahir": birthDate,
        "Usia": this.age,
        "Jenis Kelamin": this.gender,
-       "Alamat Tempat Tinggal": `${this.address_street}, Kelurahan ${this.address_village_name}, Kecamatan ${this.address_subdistrict_name}, ${this.address_district_name}, Jawa Barat`,
+       "Provinsi": "Jawa Barat",
+       "Kota": this.address_district_name,
+       "Kecamatan": this.address_subdistrict_name,
+       "Kelurahan": this.address_village_name,
+       "Alamat detail": `${this.address_street}`,
        "No Telp": this.phone_number,
        "Kewarganegaraan": this.nationality,
        "Negara":(this.nationality == "WNI" ? "Indonesia" : this.nationality_name),
        "Pekerjaan": this.occupation,
-       "Gejala": (this.last_history !== null ? this.last_history.diagnosis.toString() : null),
+       "Gejala": diagnosis,
+       "Kondisi Penyerta": diagnosis_other,
        "Riwayat": check.historyCheck(this.last_history),
        "Status": this.status,
        "Tahapan":stages,

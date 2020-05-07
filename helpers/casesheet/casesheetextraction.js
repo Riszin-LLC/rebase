@@ -6,7 +6,6 @@ const caseSheetExtraction = async (request) => {
     
     const uploaded = await handleFileUpload(request.payload.file)
   
-    let dataSheet = await readXlsxFile(dir + uploaded.filename)
     let dataSheet = (await xlsx.parse(dir + uploaded.filename))[0]['data']
 
     const version = `VERSION ${conf.version}`
