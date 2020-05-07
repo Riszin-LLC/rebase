@@ -9,12 +9,15 @@ const Hospital = mongoose.model('Hospital');
 require('../models/History')
 const History = mongoose.model('History')
 
+require('../models/User')
+const User = mongoose.model('User')
+
 require('../models/DistrictCity')
 const DistrictCity = mongoose.model('Districtcity')
 const ObjectId = require('mongoose').Types.ObjectId; 
 const Check = require('../helpers/rolecheck')
 
-function ListCase (query, user, callback) {
+async function ListCase (query, user, callback) {
 
   const myCustomLabels = {
     totalDocs: 'itemCount',
@@ -60,11 +63,31 @@ function ListCase (query, user, callback) {
   if(query.final_result){
     params.final_result = query.final_result;
   }
+  if(query.author){
+    params.author = query.author;
+  }
+
+  if (query.verified_status && query.verified_status.split) {
+    const verified_status = query.verified_status.split(',')
+    params.verified_status = { $in: verified_status }
+    
+    if (['pending','declined'].some(v => verified_status.includes(v))) {
+      options.sort.createdAt = 'asc'
+    }
+  }
+  
   if(query.search){
     var search_params = [
       { id_case : new RegExp(query.search,"i") },
       { name: new RegExp(query.search, "i") },
+      { nik: new RegExp(query.search, "i") }
     ];
+
+    if (query.verified_status !== 'verified') {
+      let users = await User.find({username: new RegExp(query.search,"i"), code_district_city: user.code_district_city}).select('_id')
+      search_params.push({ author: { $in: users.map(obj => obj._id) } })
+    }
+
     var result_search = Check.listByRole(user, params, search_params,Case,"delete_status")
   } else {
     var result_search = Check.listByRole(user, params, null,Case,"delete_status")
@@ -107,6 +130,9 @@ function listCaseExport (query, user, callback) {
   }
   if(query.address_subdistrict_code){
     params.address_subdistrict_code = query.address_subdistrict_code;
+  }
+  if (query.verified_status && query.verified_status.split) {
+    params.verified_status = { $in: query.verified_status.split(',') }
   }
   if(query.search){
     var search_params = [
@@ -159,10 +185,10 @@ async function getCaseSummaryFinal (query, user, callback) {
   let searching = Check.countByRole(user);
 
   if(query.address_village_code){
-    params.address_village_code = query.address_village_code;
+    searching.address_village_code = query.address_village_code;
   }
   if(query.address_subdistrict_code){
-    params.address_subdistrict_code = query.address_subdistrict_code;
+    searching.address_subdistrict_code = query.address_subdistrict_code;
   }
 
   if(user.role == "dinkesprov" || user.role == "superadmin"){
@@ -171,17 +197,17 @@ async function getCaseSummaryFinal (query, user, callback) {
     }
   }
 
-  const searchingPositif = {status:"POSITIF", final_result : { $nin: [1,2] }}
+  const searchingPositif = {status:"POSITIF", final_result : { $in: [0,"",null] }}
   const searchingSembuh = {status:"POSITIF",final_result:1}
   const searchingMeninggal = {status:"POSITIF",final_result:2}
   
   try {
     const positif = await Case.find(Object.assign(searching,searchingPositif))
-    .where("delete_status").ne("deleted").then(res => { return res.length })
+    .where("delete_status").ne("deleted").and({verified_status: 'verified'}).countDocuments()
     const sembuh = await Case.find(Object.assign(searching,searchingSembuh))
-    .where("delete_status").ne("deleted").then(res => { return res.length })
+    .where("delete_status").ne("deleted").and({verified_status: 'verified'}).countDocuments()
     const meninggal = await Case.find(Object.assign(searching,searchingMeninggal))
-    .where("delete_status").ne("deleted").then(res => { return res.length })
+    .where("delete_status").ne("deleted").and({verified_status: 'verified'}).countDocuments()
     const result =  {
       "SEMBUH":sembuh, 
       "MENINGGAL":meninggal,
@@ -193,17 +219,25 @@ async function getCaseSummaryFinal (query, user, callback) {
   }
 }
 
-function getCaseSummary (query, user, callback) {
-  let searching = Check.countByRole(user,query)
+async function getCaseSummary (query, user, callback) {
+  let searching = Check.countByRole(user,query);
   if(user.role == "dinkesprov" || user.role == "superadmin"){
     if(query.address_district_code){
       searching.address_district_code = query.address_district_code;
     }
   }
+
+  if(query.address_village_code){
+    searching.address_village_code = query.address_village_code;
+  }
+
+  if(query.address_subdistrict_code){
+    searching.address_subdistrict_code = query.address_subdistrict_code;
+  }
   
   var aggStatus = [
     { $match: { 
-      $and: [  searching, { delete_status: { $ne: 'deleted' }} ]
+      $and: [  searching, { delete_status: { $ne: 'deleted' }, verified_status: 'verified' } ]
     }},
     { 
       $group: { _id: "$status", total: {$sum: 1}}
@@ -212,14 +246,19 @@ function getCaseSummary (query, user, callback) {
 
   let result =  {
     'OTG':0, 
+    'OTG_PROCESS':0,
+    'OTG_DONE':0,
     'ODP':0, 
+    'ODP_PROCESS':0,
+    'ODP_DONE':0,
     'PDP':0, 
+    'PDP_PROCESS':0,
+    'PDP_DONE':0,
     'POSITIF':0, 
     'KONTAKERAT' : 0, 
     'PROBABEL' : 0
   }
-
-  Case.aggregate(aggStatus).exec().then(item => {
+  Case.aggregate(aggStatus).exec().then(async item => {
       item.forEach(function(item){
         if (item['_id'] == 'OTG') {
           result.OTG = item['total']
@@ -237,6 +276,19 @@ function getCaseSummary (query, user, callback) {
           result.KONTAKERAT = item['total']
         }
       });
+      
+      // OTG 
+      result.OTG_PROCESS = await Case.find(Object.assign(searching,{"status":"OTG", $or:[{'stage':0}, {'stage':'Proses'}], "verified_status": "verified","delete_status": { $ne: "deleted" }})).countDocuments();
+      result.OTG_DONE = await Case.find(Object.assign(searching,{"status":"OTG",$or:[{'stage':1}, {'stage':'Selesai'}], "verified_status": "verified", "delete_status": { $ne: "deleted" }})).countDocuments();
+
+      // ODP
+      result.ODP_PROCESS = await Case.find(Object.assign(searching,{"status":"ODP",$or:[{'stage':0}, {'stage':'Proses'}], "verified_status": "verified", "delete_status": { $ne: "deleted" }})).countDocuments();
+      result.ODP_DONE = await Case.find(Object.assign(searching,{"status":"ODP",$or:[{'stage':1}, {'stage':'Selesai'}], "verified_status": "verified", "delete_status": { $ne: "deleted" }})).countDocuments();
+
+      // PDP
+      result.PDP_PROCESS = await Case.find(Object.assign(searching,{"status":"PDP",$or:[{'stage':0}, {'stage':'Proses'}], "verified_status": "verified", "delete_status": { $ne: "deleted" }})).countDocuments();
+      result.PDP_DONE = await Case.find(Object.assign(searching,{"status":"PDP",$or:[{'stage':1}, {'stage':'Selesai'}], "verified_status": "verified", "delete_status": { $ne: "deleted" }})).countDocuments();
+
       return callback(null, result)
     })
     .catch(err => callback(err, null))
@@ -244,23 +296,30 @@ function getCaseSummary (query, user, callback) {
 
 function createCase (raw_payload, author, pre, callback) {
 
-  let verified 
-  if (author.role === "dinkeskota") {
-    verified= {
-      verified_status: 'verified'
-    }
-  }else{
-    verified = {
-      verified_status: 'pending'
-    }
+  let verified  = {
+    verified_status: 'verified'
+  }
+
+  if (author.role === "faskes") {
+    verified.verified_status = 'pending'
   }
 
   let date = new Date().getFullYear().toString()
-  let id_case = "covid-"
-      id_case += pre.dinkes_code
-      id_case += date.substr(2, 2)
-      id_case += "0".repeat(4 - pre.count_pasien.toString().length)
-      id_case += pre.count_pasien
+  let id_case
+
+  if (author.role === 'faskes') {
+    id_case = "precovid-"
+    id_case += pre.count_case_pending.dinkes_code
+    id_case += date.substr(2, 2)
+    id_case += "0".repeat(5 - pre.count_case_pending.count_pasien.toString().length)
+    id_case += pre.count_case_pending.count_pasien 
+  } else {
+    id_case = "covid-"
+    id_case += pre.count_case.dinkes_code
+    id_case += date.substr(2, 2)
+    id_case += "0".repeat(4 - pre.count_case.count_pasien.toString().length)
+    id_case += pre.count_case.count_pasien
+  }
 
   let insert_id_case = Object.assign(raw_payload, verified) //TODO: check is verified is not overwritten ?
       insert_id_case = Object.assign(raw_payload, {id_case})
@@ -347,7 +406,7 @@ function getCountByDistrict(code, callback) {
   DistrictCity.findOne({ kemendagri_kabupaten_kode: code})
               .exec()
               .then(dinkes =>{
-                Case.find({ address_district_code: code})
+                Case.find({ address_district_code: code, verified_status: 'verified' })
                     .sort({id_case: -1})
                     .exec()
                     .then(res =>{
@@ -355,6 +414,29 @@ function getCountByDistrict(code, callback) {
                         if (res.length > 0)
                           // ambil 4 karakter terakhir yg merupakan nomor urut dari id_case
                           count = (Number(res[0].id_case.substring(12)) + 1);
+                        let result = {
+                          prov_city_code: code,
+                          dinkes_code: dinkes.dinkes_kota_kode,
+                          count_pasien: count
+                        }
+                      return callback(null, result)
+                    }).catch(err => callback(err, null))
+              })
+}
+
+function getCountPendingByDistrict(code, callback) {
+  /* Get last number of current district id case order */
+  DistrictCity.findOne({ kemendagri_kabupaten_kode: code})
+              .exec()
+              .then(dinkes =>{
+                Case.find({ address_district_code: code, verified_status: { $in: ['pending', 'declined'] } })
+                    .sort({id_case: -1})
+                    .exec()
+                    .then(res =>{
+                        let count = 1;
+                        if (res.length > 0)
+                          // ambil 4 karakter terakhir yg merupakan nomor urut dari id_case
+                          count = (Number(res[0].id_case.substring(15)) + 1);
                         let result = {
                           prov_city_code: code,
                           dinkes_code: dinkes.dinkes_kota_kode,
@@ -397,12 +479,14 @@ async function importCases (raw_payload, author, pre, callback) {
 
       const code = item.address_district_code
       const dinkes = await DistrictCity.findOne({ kemendagri_kabupaten_kode: code})
+      const verifStatus = author.role === 'faskes' ? ['pending', 'declined'] : ['verified']
       const districtCases = await Case.findOne({ address_district_code: code, verified_status: { $in: verifStatus } }).sort({id_case: -1})
 
       let count = 1
       let casePayload = {}
 
       if (districtCases) {
+        const startNum = author.role === 'faskes' ? 15 : 12
         count = (Number(districtCases.id_case.substring(startNum)) + 1)
       }
 
@@ -412,22 +496,21 @@ async function importCases (raw_payload, author, pre, callback) {
         count_pasien: count
       }
 
-      let verified = {
-        verified_status: 'pending'
+      let verified  = {
+        verified_status: 'verified'
       }
-
-      if (author.role === "dinkeskota") {
-        verified= {
-          verified_status: 'verified'
-        }
+    
+      if (author.role === "faskes") {
+        verified.verified_status = 'pending'
       }
 
       // create case
       let date = new Date().getFullYear().toString()
-      let id_case = "covid-"
+      const digit = author.role === 'faskes' ? 5 : 4
+      let id_case = author.role === 'faskes' ? "precovid-" : "covid-"
       id_case += district.dinkes_code
       id_case += date.substr(2, 2)
-      id_case += "0".repeat(4 - district.count_pasien.toString().length)
+      id_case += "0".repeat(digit - district.count_pasien.toString().length)
       id_case += district.count_pasien
 
       casePayload = Object.assign(item, verified)
@@ -522,6 +605,20 @@ function delay(t) {
   return new Promise(resolve => setTimeout(resolve.bind(), t))
 }
 
+async function healthCheck(payload, callback) {
+  try {
+    let case_no_last_history = await Case.find({ last_history: {"$exists": false}})
+
+    let result = {
+      'case_no_last_history' : case_no_last_history,
+    }
+
+    return callback(null, result);
+  } catch (error) {
+    return callback(error, null)
+  }
+}
+
 module.exports = [
   {
     name: 'services.cases.list',
@@ -560,6 +657,10 @@ module.exports = [
     method: getCountByDistrict
   },
   {
+    name: 'services.cases.getCountPendingByDistrict',
+    method: getCountPendingByDistrict
+  },
+  {
     name: 'services.cases.softDeleteCase',
     method: softDeleteCase
   },
@@ -574,6 +675,10 @@ module.exports = [
   {
     name: 'services.cases.getIdCase',
     method: getIdCase
-  }
+  },
+  {
+    name: 'services.cases.healthcheck',
+    method: healthCheck,
+  },
 ];
 

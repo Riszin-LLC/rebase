@@ -9,11 +9,13 @@ module.exports = (server) =>{
     const CheckRoleDelete = require('../users/route_prerequesites').CheckRoleDelete(server)
     
     const countCaseByDistrict = require('./route_prerequesites').countCaseByDistrict(server)
+    const countCasePendingByDistrict = require('./route_prerequesites').countCasePendingByDistrict(server)
     const checkIfDataNotNull = require('./route_prerequesites').checkIfDataNotNull(server)
     const getCasebyId = require('./route_prerequesites').getCasebyId(server)
     const DataSheetRequest = require('./route_prerequesites').DataSheetRequest(server)
     const validationBeforeInput = require('./route_prerequesites').validationBeforeInput(server)
     const checkCaseIsExists = require('./route_prerequesites').checkCaseIsExists(server)
+    const getDetailCase = require('./route_prerequesites').getDetailCase(server)
 
 
     return [
@@ -46,8 +48,8 @@ module.exports = (server) =>{
                     CheckRoleCreate,
                     validationBeforeInput,
                     countCaseByDistrict,
+                    countCasePendingByDistrict,
                     // checkCaseIsExists, // sementara jangan di pake karena cek nik
-                    countCaseByDistrict
 
                 ]
             },
@@ -231,7 +233,51 @@ module.exports = (server) =>{
                 ]
             },
             handler: handlers.GetCaseDetailByNik
-        }
+        },
+        // Healthcheck endpoint
+        {
+            method: 'GET',
+            path: '/cases-healthcheck',
+            config: {
+                auth: 'jwt',
+                description: 'display some healthcheck info regarding cases data',
+                tags: ['api', 'cases'],
+                pre: [
+                    CheckRoleView
+                ]
+            },
+            handler: handlers.HealthCheck
+        },
+        // get case verifications
+        {
+            method: 'GET',
+            path: '/cases/{id}/verifications',
+            config: {
+                auth: 'jwt',
+                description: 'Get case verifications',
+                tags: ['api', 'cases.verifications'],
+                pre: [
+                    CheckRoleView,
+                ]
+            },
+            handler: handlers.GetCaseVerifications
+        },
+        // create verifications
+        {
+            method: 'POST',
+            path: '/cases/{id}/verifications',
+            config: {
+                auth: 'jwt',
+                description: 'Create case verifications',
+                tags: ['api', 'cases.verifications'],
+                validate: inputValidations.CaseVerifyPayloadValidations,
+                pre: [
+                    CheckRoleCreate,
+                    getDetailCase
+                ]
+            },
+            handler: handlers.CreateCaseVerification
+        },
     ]
 
 }
